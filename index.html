@@ -1,0 +1,243 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Aquarium</title>
+<script src="/nav.js" defer></script>
+<style>
+  :root { --bg:#10162a; --panel:#1c2540; --fg:#e8ecff; --dim:#8a93b8; --ok:#5ad06a; --warn:#f0c040; --bad:#e85050; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.5 monospace; }
+  main { max-width:768px; margin:0 auto; padding:12px 16px 32px; }
+  h1 { font-size:18px; margin:4px 0 10px; letter-spacing:2px; }
+  canvas { width:100%; aspect-ratio:192/120; image-rendering:pixelated; display:block; border:4px solid #2e3a66; background:#123; cursor:pointer; touch-action:manipulation; }
+  .bar { display:flex; gap:8px; flex-wrap:wrap; margin:10px 0; }
+  button { font:inherit; color:var(--fg); background:#2e3a66; border:2px solid #4a5a96; padding:8px 12px; cursor:pointer; }
+  button:hover:not(:disabled) { background:#3c4a80; }
+  button:disabled { opacity:.4; cursor:default; }
+  button.sel { border-color:var(--warn); }
+  .panel { background:var(--panel); border:2px solid #2e3a66; padding:10px 12px; }
+  .meter { height:8px; background:#0b1020; margin:2px 0 8px; }
+  .meter i { display:block; height:100%; }
+  .tree b { color:var(--warn); }
+  .tree s { color:var(--dim); text-decoration:none; }
+  #msg { color:var(--warn); min-height:1.5em; margin:6px 0; }
+  .hint, footer { color:var(--dim); font-size:12px; }
+</style>
+</head>
+<body>
+<main>
+  <h1 id="title"></h1>
+  <canvas id="tank" width="192" height="120"></canvas>
+  <div id="msg"></div>
+  <div class="bar">
+    <button id="feed"></button>
+    <button id="med"></button>
+    <button id="egg"></button>
+  </div>
+  <div class="bar" id="list"></div>
+  <div class="panel" id="info"></div>
+  <p class="hint" id="hint"></p>
+  <footer>v0.1.0</footer>
+</main>
+<script>
+'use strict';
+const KEY = 'aquarium.save.v1';
+const LANG = (() => { try { return (localStorage.getItem('vibe.lang') || navigator.language || 'en').startsWith('zh') ? 'zh' : 'en'; } catch (e) { return 'en'; } })();
+const T = {
+  zh: { title:'像素水族箱', feed:'喂食', med:'用药', egg:'新鱼卵', egg_n:'鱼卵', fry:'鱼苗', juv:'幼鱼', hunger:'饱食', hp:'健康', sick:'生病了！快用药', ok:'健康', hungry:'饿了', hatched:'孵化了！是', grew:'长大了：', died:'死掉了…', cured:'治好了', overdose:'没病吃药，伤身体', tree:'成长树', good:'细心照顾', bad:'疏于照顾', unknown:'？？？', none:'点「新鱼卵」开始', hint:'点水面投喂，点鱼选中。饿太久或剩饵太多容易生病。' },
+  en: { title:'PIXEL AQUARIUM', feed:'Feed', med:'Medicine', egg:'New egg', egg_n:'Egg', fry:'Fry', juv:'Juvenile', hunger:'Food', hp:'Health', sick:'Sick! Give medicine', ok:'Healthy', hungry:'Hungry', hatched:'hatched! It is a', grew:'grew into', died:'died…', cured:'cured', overdose:'Medicine without illness hurts', tree:'Growth tree', good:'well cared', bad:'neglected', unknown:'???', none:'Tap "New egg" to start', hint:'Tap the water to drop food, tap a fish to select it. Hunger and leftover food make fish sick.' },
+}[LANG];
+const N = o => o[LANG];
+
+// Species: base look, plus two adult forms. Form 0 = well cared, form 1 = neglected.
+const SP = {
+  gold:   { n:{zh:'金鱼',en:'Goldfish'}, col:'#f08838', fin:'#f8c048', h:.7, tail:5,
+            ad:[{ n:{zh:'琉金',en:'Ryukin'}, col:'#f8d040', fin:'#fff0a0', tail:7, h:.85 },
+                { n:{zh:'彗星',en:'Comet'},  col:'#e04020', fin:'#f08060', tail:9 }] },
+  tetra:  { n:{zh:'灯鱼',en:'Tetra'}, col:'#5080e8', fin:'#a0c0ff', stripe:'#e83040', h:.45, tail:3,
+            ad:[{ n:{zh:'宝莲灯',en:'Cardinal'}, col:'#3070ff', stripe:'#ff2030' },
+                { n:{zh:'霓虹灯',en:'Neon'},     col:'#6040c0', stripe:'#40f0ff' }] },
+  puffer: { n:{zh:'河豚',en:'Puffer'}, col:'#d8c070', fin:'#f0e0a0', spot:'#806030', h:.8, tail:2,
+            ad:[{ n:{zh:'刺豚',en:'Spiky Puffer'}, spikes:1 },
+                { n:{zh:'圆豚',en:'Round Puffer'}, col:'#e8d890', h:1 }] },
+};
+const W = 192, H = 120, SAND = H - 10, MAX_FISH = 6;
+const GROW = [20, 150, 450];   // cumulative good-care seconds to reach fry / juvenile / adult
+const NEGLECT_LIMIT = 60;      // neglected seconds before adult turns into form 1
+const HUNGER_RATE = 100 / 600; // full -> empty in 10 minutes
+const OFFLINE_CAP = 900;       // simulate at most 15 offline minutes
+const SIZE = [0, 3, 5, 8];
+
+let fish = [], food = [], nextId = 1, sel = 0, msgT = 0;
+
+const look = f => f.stage === 3 ? { ...SP[f.sp], ...SP[f.sp].ad[f.form] } : SP[f.sp];
+const name = f => f.stage === 0 ? T.egg_n : f.stage === 3 ? N(look(f).n) : N(SP[f.sp].n) + ' ' + (f.stage === 1 ? T.fry : T.juv);
+const rnd = (a, b) => a + Math.random() * (b - a);
+
+function newEgg() {
+  const sp = Object.keys(SP)[Math.random() * 3 | 0];
+  fish.push({ id: nextId++, sp, stage: 0, form: 0, xp: 0, neglect: 0, hunger: 80, hp: 100, sick: 0,
+              x: rnd(20, W - 20), y: SAND - 3, tx: 0, ty: 0, vx: 1 });
+  sel = fish[fish.length - 1].id;
+}
+
+function say(s) { document.getElementById('msg').textContent = s; msgT = 6; }
+
+// One second of simulation for one fish. Returns false if it died.
+function tick(f, dirt) {
+  if (f.stage === 0) {
+    if (++f.xp >= GROW[0]) { f.stage = 1; f.y -= 10; say(`${T.egg_n} #${f.id} ${T.hatched} ${N(SP[f.sp].n)}`); }
+    return true;
+  }
+  f.hunger = Math.max(0, f.hunger - HUNGER_RATE);
+  if (f.hunger < 30 || f.sick) f.neglect++; else f.xp++;
+  if (f.stage < 3 && f.xp >= GROW[f.stage]) {
+    f.stage++;
+    if (f.stage === 3) f.form = f.neglect < NEGLECT_LIMIT ? 0 : 1;
+    say(`#${f.id} ${T.grew} ${name(f)}`);
+  }
+  if (!f.sick && Math.random() < 0.002 + (f.hunger < 30 ? 0.006 : 0) + dirt * 0.002) f.sick = 1;
+  if (f.hunger <= 0) f.hp -= 1;
+  if (f.sick) f.hp -= 0.4; else if (f.hunger > 50) f.hp = Math.min(100, f.hp + 0.3);
+  return f.hp > 0;
+}
+
+function tickAll() {
+  const dirt = food.filter(p => p.y >= SAND).length;
+  fish = fish.filter(f => tick(f, dirt) || (say(`${name(f)} #${f.id} ${T.died}`), false));
+}
+
+function save() { try { localStorage.setItem(KEY, JSON.stringify({ fish, nextId, t: Date.now() })); } catch (e) {} }
+function load() {
+  try {
+    const s = JSON.parse(localStorage.getItem(KEY));
+    if (!s || !Array.isArray(s.fish)) return false;
+    fish = s.fish; nextId = s.nextId || fish.length + 1;
+    const away = Math.min(OFFLINE_CAP, Math.max(0, (Date.now() - s.t) / 1000 | 0));
+    for (let i = 0; i < away; i++) tickAll();
+    return true;
+  } catch (e) { return false; }
+}
+
+// ---------- drawing ----------
+const cv = document.getElementById('tank'), cx = cv.getContext('2d');
+function px(x, y, c) { cx.fillStyle = c; cx.fillRect(Math.round(x), Math.round(y), 1, 1); }
+const sandDots = Array.from({ length: 60 }, () => [rnd(0, W) | 0, rnd(SAND + 1, H) | 0]);
+const plants = [14, 22, 150, 160, 176].map(x => ({ x, h: rnd(25, 50) | 0 }));
+let frame = 0;
+
+function drawTank() {
+  const bands = ['#1e4f8a', '#1b4780', '#183f76', '#15376c', '#122f62'];
+  bands.forEach((c, i) => { cx.fillStyle = c; cx.fillRect(0, i * SAND / 5, W, SAND / 5 + 1); });
+  cx.fillStyle = '#d8b878'; cx.fillRect(0, SAND, W, H - SAND);
+  sandDots.forEach(([x, y]) => px(x, y, '#b89858'));
+  plants.forEach(p => { for (let i = 0; i < p.h; i++) px(p.x + Math.sin(frame / 40 + i / 6 + p.x) * i / 12, SAND - i, i % 4 ? '#3a9a4a' : '#5ac06a'); });
+  for (let i = 0; i < 6; i++) px(184 + Math.sin(frame / 10 + i), SAND - ((frame / 2 + i * 17) % SAND), '#a0d0ff');
+}
+
+function drawFish(f) {
+  const x = Math.round(f.x), y = Math.round(f.y);
+  if (f.stage === 0) {
+    const w = f.xp > GROW[0] * .7 && frame % 20 < 10 ? 1 : 0; // wobble before hatching
+    for (let dx = -2; dx <= 2; dx++) for (let dy = -3; dy <= 2; dy++) if (dx * dx / 6 + dy * dy / 9 <= 1) px(x + dx + w, y + dy, '#f4ead0');
+    px(x - 1 + w, y - 2, '#fff'); px(x + 1 + w, y + 1, '#c8b890');
+  } else {
+    const k = look(f), L = SIZE[f.stage], h = Math.max(1, Math.round(L * k.h)), d = f.vx < 0 ? -1 : 1;
+    const col = f.sick ? '#90a868' : k.col, t = Math.max(1, Math.round(k.tail * L / 8)), flick = Math.round(Math.sin(frame / 6));
+    for (let i = 1; i <= t; i++) for (let j = -Math.ceil(i * .7); j <= Math.ceil(i * .7); j++) px(x - d * (L + i - 1), y + j + (i > 1 ? flick : 0), k.fin);
+    for (let dx = -L; dx <= L; dx++) for (let dy = -h; dy <= h; dy++) {
+      if (dx * dx / (L * L) + dy * dy / (h * h) > 1) continue;
+      let c = col;
+      if (k.stripe && dy === 0 && Math.abs(dx) < L * .7) c = k.stripe;
+      if (k.spot && (dx * 3 + dy * 5 + 99) % 7 === 0) c = k.spot;
+      px(x + dx, y + dy, c);
+    }
+    if (k.spikes) for (let a = 0; a < 12; a++) px(x + Math.cos(a / 12 * 6.28) * (L + 1), y + Math.sin(a / 12 * 6.28) * (h + 1), k.spot);
+    px(x + d * (L - 2 > 0 ? L - 2 : L - 1), y - (h > 1 ? 1 : 0), '#000');
+    if (f.sick && frame % 60 < 30) px(x, y - h - 2, '#7f7');
+    if (f.hunger < 30 && frame % 60 >= 30) px(x + 1, y - h - 2, '#f44');
+  }
+  if (f.id === sel) { const top = y - (f.stage ? SIZE[f.stage] : 3) - 5; px(x, top + 1, '#fff'); px(x - 1, top, '#fff'); px(x + 1, top, '#fff'); }
+}
+
+function move(f) {
+  if (f.stage === 0) return;
+  const L = SIZE[f.stage];
+  let tx = f.tx, ty = f.ty, target = null;
+  if (f.hunger < 95 && food.length) {
+    target = food.reduce((a, p) => Math.hypot(p.x - f.x, p.y - f.y) < Math.hypot(a.x - f.x, a.y - f.y) ? p : a);
+    tx = target.x; ty = target.y;
+  } else if (Math.hypot(tx - f.x, ty - f.y) < 3 || !tx) { f.tx = rnd(12, W - 12); f.ty = rnd(12, SAND - 8); return; }
+  const dist = Math.hypot(tx - f.x, ty - f.y) || 1, sp = (0.2 + 0.1 * f.stage) * (f.sick ? .5 : 1);
+  const vx = (tx - f.x) / dist * sp;
+  f.x += vx; f.y += (ty - f.y) / dist * sp;
+  if (Math.abs(vx) > .05) f.vx = vx;
+  if (target && dist < L + 2) { food.splice(food.indexOf(target), 1); f.hunger = Math.min(100, f.hunger + 12); }
+}
+
+function loop() {
+  frame++;
+  drawTank();
+  food.forEach(p => { if (p.y < SAND) p.y += .25; else p.t++; px(p.x, p.y, '#a06030'); });
+  food = food.filter(p => p.t < 1200); // leftovers rot away after ~20s, dirtying water meanwhile
+  fish.forEach(f => { move(f); drawFish(f); });
+  requestAnimationFrame(loop);
+}
+
+// ---------- UI ----------
+const $ = id => document.getElementById(id);
+const meter = (v, c) => `<div class="meter"><i style="width:${Math.max(0, v)}%;background:${c}"></i></div>`;
+const stageTag = (f, s, label) => f.stage === s ? `<b>[${label}]</b>` : f.stage > s ? label : `<s>${label}</s>`;
+
+function render() {
+  $('egg').disabled = fish.length >= MAX_FISH;
+  $('list').innerHTML = fish.map(f => `<button data-id="${f.id}" class="${f.id === sel ? 'sel' : ''}">#${f.id} ${name(f)}${f.sick ? ' +' : ''}</button>`).join('');
+  const f = fish.find(f => f.id === sel);
+  if (!f) { $('info').textContent = T.none; return; }
+  const sp = SP[f.sp];
+  const adults = f.stage === 0 ? `${T.unknown}` : sp.ad.map((a, i) => {
+    const label = `${N(a.n)} (${i ? T.bad : T.good})`;
+    return f.stage === 3 ? (f.form === i ? `<b>[${N(a.n)}]</b>` : `<s>${N(a.n)}</s>`) : `<s>${label}</s>`;
+  }).join(' / ');
+  const tree = f.stage === 0 ? `${stageTag(f, 0, T.egg_n)} → ${T.unknown}`
+    : `${stageTag(f, 0, T.egg_n)} → ${stageTag(f, 1, T.fry)} → ${stageTag(f, 2, T.juv)} → ${adults}`;
+  const status = f.stage === 0 ? '' : f.sick ? T.sick : f.hunger < 30 ? T.hungry : T.ok;
+  $('info').innerHTML = `<div><b>#${f.id} ${f.stage === 0 ? T.egg_n : name(f)}</b> ${status}</div>`
+    + (f.stage === 0 ? meter(f.xp / GROW[0] * 100, '#f4ead0')
+       : `${T.hunger}${meter(f.hunger, '#f0a040')}${T.hp}${meter(f.hp, f.sick ? '#90a868' : '#5ad06a')}`)
+    + `<div class="tree">${T.tree}: ${tree}</div>`;
+}
+
+function dropFood(x) { food.push({ x: Math.max(2, Math.min(W - 2, x)), y: 2, t: 0 }); }
+
+$('title').textContent = T.title;
+$('hint').textContent = T.hint;
+$('feed').textContent = T.feed;
+$('med').textContent = T.med;
+$('egg').textContent = T.egg;
+$('feed').onclick = () => { for (let i = 0; i < 3; i++) dropFood(rnd(20, W - 20)); };
+$('egg').onclick = () => { newEgg(); save(); render(); };
+$('med').onclick = () => {
+  const f = fish.find(f => f.id === sel);
+  if (!f || f.stage === 0) return;
+  if (f.sick) { f.sick = 0; say(`#${f.id} ${T.cured}`); } else { f.hp -= 10; say(T.overdose); }
+  save(); render();
+};
+$('list').onclick = e => { const id = +e.target.dataset.id; if (id) { sel = id; render(); } };
+cv.onclick = e => {
+  const r = cv.getBoundingClientRect(), x = (e.clientX - r.left) / r.width * W, y = (e.clientY - r.top) / r.height * H;
+  const hit = fish.find(f => Math.hypot(f.x - x, f.y - y) < (SIZE[f.stage] || 3) + 3);
+  if (hit) sel = hit.id; else dropFood(x);
+  render();
+};
+
+if (!load() || !fish.length && nextId === 1) newEgg();
+if (!fish.find(f => f.id === sel) && fish.length) sel = fish[0].id;
+setInterval(() => { tickAll(); if (msgT && !--msgT) $('msg').textContent = ''; save(); render(); }, 1000);
+render();
+loop();
+</script>
+</body>
+</html>
