@@ -44,7 +44,8 @@
 <script>
 'use strict';
 const KEY = 'aquarium.save.v1';
-const LANG = (() => { try { return (localStorage.getItem('vibe.lang') || navigator.language || 'en').startsWith('zh') ? 'zh' : 'en'; } catch (e) { return 'en'; } })();
+// 全站翻译暂时只开中文（vibe-game 的 nav.js 里 LANG_OPEN）；以后开放时恢复按 vibe.lang 选择
+const LANG = 'zh';
 const T = {
   zh: { title:'像素水族箱', feed:'喂食', med:'用药', egg:'新鱼卵', egg_n:'鱼卵', fry:'鱼苗', juv:'幼鱼', hunger:'饱食', hp:'健康', sick:'生病了！快用药', ok:'健康', hungry:'饿了', hatched:'孵化了！是', grew:'长大了：', died:'死掉了…', cured:'治好了', overdose:'没病吃药，伤身体', tree:'成长树', good:'细心照顾', bad:'疏于照顾', unknown:'？？？', none:'点「新鱼卵」开始', hint:'点水面投喂，点鱼选中。饿太久或剩饵太多容易生病。' },
   en: { title:'PIXEL AQUARIUM', feed:'Feed', med:'Medicine', egg:'New egg', egg_n:'Egg', fry:'Fry', juv:'Juvenile', hunger:'Food', hp:'Health', sick:'Sick! Give medicine', ok:'Healthy', hungry:'Hungry', hatched:'hatched! It is a', grew:'grew into', died:'died…', cured:'cured', overdose:'Medicine without illness hurts', tree:'Growth tree', good:'well cared', bad:'neglected', unknown:'???', none:'Tap "New egg" to start', hint:'Tap the water to drop food, tap a fish to select it. Hunger and leftover food make fish sick.' },
