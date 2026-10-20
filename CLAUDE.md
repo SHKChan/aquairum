@@ -1,4 +1,4 @@
-# aquairum
+# aquarium
 
 像素水族箱：www.vibe-game.com/aquarium/。孵鱼卵、喂食、治病，照顾得好不好决定鱼长成什么样。
 
@@ -26,5 +26,4 @@
 
 - 全部代码在 `index.html` 一个文件里：`SP` 三种鱼（各有“照顾得好 / 疏于照顾”两种成年形态）、`GROW` 成长阈值、`OFFLINE_CAP` 离线最多补算 15 分钟、`MAX_FISH` 最多 6 条。
 - 存档：`aquarium.save.v1`，结构改了就升到 v2。
-- 注意仓库名是 `aquairum`（拼写历史原因），网址路径、Worker、存档前缀都是 `aquarium`，不要改。
 - 界面文字在 `T` 里有中英两套，`LANG` 现在固定 `'zh'`（GUIDE：暂时只开中文）。
